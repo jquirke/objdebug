@@ -1,8 +1,8 @@
 # objdebug 
 
-Hacked up tool I use to inspect Go object files for troubleshooting, bugfixing
-and learning. Heavily dependent on Go internal packages. Fills a nice gap
-between nm, objdump, and debugger (dlv).  
+Hacked up tool I use to inspect Go (native) object files for troubleshooting, 
+bugfixing and learning. Heavily dependent on Go internal packages. 
+Fills a nice gap between nm, objdump, and debugger (dlv).  
 
 Not maintained.
 
