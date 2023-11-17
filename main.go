@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -22,7 +23,9 @@ func usage() {
 }
 
 var (
-	flagBool = flag.Bool("relocs", false, "Print relocation info")
+	flagReloc = flag.Bool("relocs", false, "Print relocation info")
+	symregexp = flag.String("s", "", "only list symbols (from any def type, from any file) matching this regexp")
+	symRE     *regexp.Regexp
 )
 
 func main() {
@@ -30,8 +33,15 @@ func main() {
 	log.SetPrefix("objdump: ")
 
 	flag.Usage = usage
-
 	flag.Parse()
+
+	if *symregexp != "" {
+		re, err := regexp.Compile(*symregexp)
+		if err != nil {
+			log.Fatalf("invalid -s regexp: %v", err)
+		}
+		symRE = re
+	}
 
 	if flag.NArg() != 1 {
 		usage()
@@ -166,7 +176,15 @@ func dumpsyms(r *goobj.Reader) {
 	totalSym := 0
 	for _, cls := range symclasses {
 		for i := 0; i < cls.syms; i++ {
-			dumpsym(cls.name, i, r.Sym(uint32(totalSym+i)), r)
+			// special case, non pkg refs are counted from end of non pkg defs
+			symIdx := i
+			if cls.name == "NonPkgRef" {
+				symIdx += r.NNonpkgdef()
+			}
+			sym := r.Sym(uint32(totalSym + i))
+			if symRE == nil || symRE.MatchString(sym.Name(r)) {
+				dumpsym(cls.name, symIdx, sym, r)
+			}
 		}
 		totalSym += cls.syms
 	}
@@ -174,11 +192,12 @@ func dumpsyms(r *goobj.Reader) {
 func dumpsym(cls string, i int, sym *goobj.Sym, r *goobj.Reader) {
 	fmt.Printf("   %-11s %4d: ABI:%04X Type:%12s Size:%8d Flag1[%24s] Flag2[%16s], Relocs=%4d [%s]\n", cls, i,
 		int(sym.ABI()), symtype(sym.Type()), int(sym.Siz()), symflag(sym.Flag()), symflag2(sym.Flag2()), r.NReloc(uint32(i)), sym.Name(r))
-	if *flagBool {
+	if *flagReloc {
 		for i, reloc := range r.Relocs(uint32(i)) {
-			fmt.Printf("      R%3d: Off: %08X Siz: %02X Sym (%8s, %d) Address: %08X\n", i,
+			fmt.Printf("      R%3d: Off: %08X Siz: %02X Sym <%8s, %4d> Address: %08X Type: %-25s\n", i,
 				int(reloc.Off()), int(reloc.Siz()),
-				pkgidx(reloc.Sym().PkgIdx), int(reloc.Sym().SymIdx), int(reloc.Add()))
+				pkgidx(reloc.Sym().PkgIdx), int(reloc.Sym().SymIdx), int(reloc.Add()),
+				relocType(reloc.Type()))
 		}
 	}
 }
@@ -286,7 +305,102 @@ func dumprefflags(r *goobj.Reader) {
 	nrefflags := r.NRefFlags()
 	for i := 0; i < nrefflags; i++ {
 		refflag := r.RefFlags(i)
-		fmt.Printf("nrefflag: %4d: SymRef<%4d, %d> flag %02X flag2 %02X\n", i,
+		fmt.Printf("nrefflag: %4d: SymRef<%4d, %4d> flag %02X flag2 %02X\n", i,
 			refflag.Sym().PkgIdx, refflag.Sym().SymIdx, refflag.Flag(), refflag.Flag2())
 	}
+}
+
+func relocType(typ uint16) string {
+	relocType := map[objabi.RelocType]string{
+		objabi.R_ADDR:                    "R_ADDR",
+		objabi.R_ADDRPOWER:               "R_ADDRPOWER",
+		objabi.R_ADDRARM64:               "R_ADDRARM64",
+		objabi.R_ADDRMIPS:                "R_ADDRMIPS",
+		objabi.R_ADDROFF:                 "R_ADDROFF",
+		objabi.R_SIZE:                    "R_SIZE",
+		objabi.R_CALL:                    "R_CALL",
+		objabi.R_CALLARM:                 "R_CALLARM",
+		objabi.R_CALLARM64:               "R_CALLARM64",
+		objabi.R_CALLIND:                 "R_CALLIND",
+		objabi.R_CALLPOWER:               "R_CALLPOWER",
+		objabi.R_CALLMIPS:                "R_CALLMIPS",
+		objabi.R_CONST:                   "R_CONST",
+		objabi.R_PCREL:                   "R_PCREL",
+		objabi.R_TLS_LE:                  "R_TLS_LE",
+		objabi.R_TLS_IE:                  "R_TLS_IE",
+		objabi.R_GOTOFF:                  "R_GOTOFF",
+		objabi.R_PLT0:                    "R_PLT0",
+		objabi.R_PLT1:                    "R_PLT1",
+		objabi.R_PLT2:                    "R_PLT2",
+		objabi.R_USEFIELD:                "R_USEFIELD",
+		objabi.R_USETYPE:                 "R_USETYPE",
+		objabi.R_USEIFACE:                "R_USEIFACE",
+		objabi.R_USEIFACEMETHOD:          "R_USEIFACEMETHOD",
+		objabi.R_USENAMEDMETHOD:          "R_USENAMEDMETHOD",
+		objabi.R_METHODOFF:               "R_METHODOFF",
+		objabi.R_KEEP:                    "R_KEEP",
+		objabi.R_POWER_TOC:               "R_POWER_TOC",
+		objabi.R_GOTPCREL:                "R_GOTPCREL",
+		objabi.R_JMPMIPS:                 "R_JMPMIPS",
+		objabi.R_DWARFSECREF:             "R_DWARFSECREF",
+		objabi.R_DWARFFILEREF:            "R_DWARFFILEREF",
+		objabi.R_ARM64_TLS_LE:            "R_ARM64_TLS_LE",
+		objabi.R_ARM64_TLS_IE:            "R_ARM64_TLS_IE",
+		objabi.R_ARM64_GOTPCREL:          "R_ARM64_GOTPCREL",
+		objabi.R_ARM64_GOT:               "R_ARM64_GOT",
+		objabi.R_ARM64_PCREL:             "R_ARM64_PCREL",
+		objabi.R_ARM64_PCREL_LDST8:       "R_ARM64_PCREL_LDST8",
+		objabi.R_ARM64_PCREL_LDST16:      "R_ARM64_PCREL_LDST16",
+		objabi.R_ARM64_PCREL_LDST32:      "R_ARM64_PCREL_LDST32",
+		objabi.R_ARM64_PCREL_LDST64:      "R_ARM64_PCREL_LDST64",
+		objabi.R_ARM64_LDST8:             "R_ARM64_LDST8",
+		objabi.R_ARM64_LDST16:            "R_ARM64_LDST16",
+		objabi.R_ARM64_LDST32:            "R_ARM64_LDST32",
+		objabi.R_ARM64_LDST64:            "R_ARM64_LDST64",
+		objabi.R_ARM64_LDST128:           "R_ARM64_LDST128",
+		objabi.R_POWER_TLS_LE:            "R_POWER_TLS_LE",
+		objabi.R_POWER_TLS_IE:            "R_POWER_TLS_IE",
+		objabi.R_POWER_TLS:               "R_POWER_TLS",
+		objabi.R_POWER_TLS_IE_PCREL34:    "R_POWER_TLS_IE_PCREL34",
+		objabi.R_POWER_TLS_LE_TPREL34:    "R_POWER_TLS_LE_TPREL34",
+		objabi.R_ADDRPOWER_DS:            "R_ADDRPOWER_DS",
+		objabi.R_ADDRPOWER_GOT:           "R_ADDRPOWER_GOT",
+		objabi.R_ADDRPOWER_GOT_PCREL34:   "R_ADDRPOWER_GOT_PCREL34",
+		objabi.R_ADDRPOWER_PCREL:         "R_ADDRPOWER_PCREL",
+		objabi.R_ADDRPOWER_TOCREL:        "R_ADDRPOWER_TOCREL",
+		objabi.R_ADDRPOWER_TOCREL_DS:     "R_ADDRPOWER_TOCREL_DS",
+		objabi.R_ADDRPOWER_D34:           "R_ADDRPOWER_D34",
+		objabi.R_ADDRPOWER_PCREL34:       "R_ADDRPOWER_PCREL34",
+		objabi.R_RISCV_JAL:               "R_RISCV_JAL",
+		objabi.R_RISCV_JAL_TRAMP:         "R_RISCV_JAL_TRAMP",
+		objabi.R_RISCV_CALL:              "R_RISCV_CALL",
+		objabi.R_RISCV_PCREL_ITYPE:       "R_RISCV_PCREL_ITYPE",
+		objabi.R_RISCV_PCREL_STYPE:       "R_RISCV_PCREL_STYPE",
+		objabi.R_RISCV_TLS_IE:            "R_RISCV_TLS_IE",
+		objabi.R_RISCV_TLS_LE:            "R_RISCV_TLS_LE",
+		objabi.R_RISCV_GOT_HI20:          "R_RISCV_GOT_HI20",
+		objabi.R_RISCV_PCREL_HI20:        "R_RISCV_PCREL_HI20",
+		objabi.R_RISCV_PCREL_LO12_I:      "R_RISCV_PCREL_LO12_I",
+		objabi.R_RISCV_PCREL_LO12_S:      "R_RISCV_PCREL_LO12_S",
+		objabi.R_RISCV_BRANCH:            "R_RISCV_BRANCH",
+		objabi.R_RISCV_RVC_BRANCH:        "R_RISCV_RVC_BRANCH",
+		objabi.R_RISCV_RVC_JUMP:          "R_RISCV_RVC_JUMP",
+		objabi.R_PCRELDBL:                "R_PCRELDBL",
+		objabi.R_ADDRLOONG64:             "R_ADDRLOONG64",
+		objabi.R_ADDRLOONG64U:            "R_ADDRLOONG64U",
+		objabi.R_ADDRLOONG64TLS:          "R_ADDRLOONG64TLS",
+		objabi.R_ADDRLOONG64TLSU:         "R_ADDRLOONG64TLSU",
+		objabi.R_CALLLOONG64:             "R_CALLLOONG64",
+		objabi.R_LOONG64_TLS_IE_PCREL_HI: "R_LOONG64_TLS_IE_PCREL_HI",
+		objabi.R_LOONG64_TLS_IE_LO:       "R_LOONG64_TLS_IE_LO",
+		objabi.R_JMPLOONG64:              "R_JMPLOONG64",
+		objabi.R_ADDRMIPSU:               "R_ADDRMIPSU",
+		objabi.R_ADDRMIPSTLS:             "R_ADDRMIPSTLS",
+		objabi.R_ADDRCUOFF:               "R_ADDRCUOFF",
+		objabi.R_WASMIMPORT:              "R_WASMIMPORT",
+		objabi.R_XCOFFREF:                "R_XCOFFREF",
+		objabi.R_PEIMAGEOFF:              "R_PEIMAGEOFF",
+		objabi.R_INITORDER:               "R_INITORDER",
+	}
+	return relocType[objabi.RelocType(typ)]
 }

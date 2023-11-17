@@ -23,7 +23,7 @@ go build
 Can read .a (archive) and .o (object files) files, without needing to specify. 
 
 ```
-objdebug [-relocs] <file>
+objdebug [-relocs] [-s=<regexsyms>] <file>
 ```
 
 Customise to debug the sitaution as needed.
