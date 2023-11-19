@@ -194,10 +194,11 @@ func dumpsym(cls string, i int, sym *goobj.Sym, r *goobj.Reader) {
 		int(sym.ABI()), symtype(sym.Type()), int(sym.Siz()), symflag(sym.Flag()), symflag2(sym.Flag2()), r.NReloc(uint32(i)), sym.Name(r))
 	if *flagReloc {
 		for i, reloc := range r.Relocs(uint32(i)) {
-			fmt.Printf("      R%3d: Off: %08X Siz: %02X Sym <%8s, %4d> Address: %08X Type: %-25s\n", i,
+			fmt.Printf("      R%3d: Off: %08X Siz: %02X Sym <%8s, %4d> Address: %08X Type: %-25s Ref: %s\n", i,
 				int(reloc.Off()), int(reloc.Siz()),
 				pkgidx(reloc.Sym().PkgIdx), int(reloc.Sym().SymIdx), int(reloc.Add()),
-				relocType(reloc.Type()))
+				relocType(reloc.Type()),
+				resolveSymRef(r, reloc.Sym()))
 		}
 	}
 }
@@ -403,4 +404,34 @@ func relocType(typ uint16) string {
 		objabi.R_INITORDER:               "R_INITORDER",
 	}
 	return relocType[objabi.RelocType(typ)]
+}
+
+func resolveSymRef(r *goobj.Reader, ref goobj.SymRef) string {
+
+	switch ref.PkgIdx {
+	case (1 << 31) - 1:
+		// - If PkgIdx is PkgIdxNone, SymIdx is the index of the symbol in the
+		//   NonPkgDefs array (could naturally overflow to NonPkgRefs array).
+		nonPkgDefOff := uint32(r.NSym() + r.NHashed64def() + r.NHasheddef())
+		return fmt.Sprintf("<None    > [%s]", r.Sym(nonPkgDefOff+uint32(ref.SymIdx)).Name(r))
+	case (1 << 31) - 2:
+		return "<Hashed64> [??]"
+	case (1 << 31) - 3:
+		return "<Hashed  > [??]"
+	case (1 << 31) - 4:
+		return "<Builtin > [??]"
+	case (1 << 31) - 5:
+		// - If PkgIdx is PkgIdxSelf, SymIdx is the index of the symbol in the
+		//   SymbolDefs array.
+		return fmt.Sprintf("<Self    > [%s]", r.Sym(uint32(ref.SymIdx)).Name(r))
+	case 0:
+		return "<Invalid> "
+	default:
+		// - Otherwise, SymIdx is the index of the symbol in some other package's
+		//   SymbolDefs array.
+		// we dont look up the target symbol as we would start to become a linker
+		return fmt.Sprintf("<Regular>  [%s:??]", r.Pkg(int(ref.PkgIdx)))
+	}
+
+	return ""
 }
